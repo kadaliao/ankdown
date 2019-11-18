@@ -68,7 +68,10 @@ import os
 import re
 import tempfile
 import textwrap
+import requests
 
+from urllib.parse import urlparse
+from os.path import basename
 from shutil import copyfile
 
 import misaka
@@ -266,16 +269,16 @@ def field_to_html(field):
     if CONFIG['dollar']:
         for (sep, (op, cl)) in [("$$", (r"\\[", r"\\]")), ("$", (r"\\(", r"\\)"))]:
             escaped_sep = sep.replace(r"$", r"\$")
-            # ignore escaped dollar signs when splitting the field    
-            field = re.split(r"(?<!\\){}".format(escaped_sep), field) 
+            # ignore escaped dollar signs when splitting the field
+            field = re.split(r"(?<!\\){}".format(escaped_sep), field)
             # add op(en) and cl(osing) brackets to every second element of the list
-            field[1::2] = [op + e + cl for e in field[1::2]] 
+            field[1::2] = [op + e + cl for e in field[1::2]]
             field = "".join(field)
     else:
         for bracket in ["(", ")", "[", "]"]:
             field = field.replace(r"\{}".format(bracket), r"\\{}".format(bracket))
             # backslashes, man.
-    
+
     if CONFIG['highlight']:
         return highlight_markdown(field)
 
@@ -286,7 +289,30 @@ def field_to_html(field):
 def compile_field(field_lines, is_markdown):
     """Turn field lines into an HTML field suitable for Anki."""
     fieldtext = ''.join(field_lines)
+
     if is_markdown:
+        def _extract_image(matchobj):
+            image_url = matchobj[2]
+            disassembled = urlparse(image_url)
+            image_name = os.path.basename(disassembled.path)
+
+            try:
+                res = requests.get(image_url, stream=True)
+            except requests.exceptions.ConnectionError:
+                raise Exception('failed to download %s for markdown: %s' % (image_url, fieldtext))
+            else:
+                if res.status_code != 200:
+                    raise Exception('failed to download %s for markdown:\n\n%s' % (image_url, fieldtext))
+
+                with open(image_name, 'wb') as f:
+                    for chunk in res:
+                        f.write(chunk)
+                    f.flush()
+
+            filename = '%s(%s)' % (matchobj[1], os.path.join(os.path.abspath('.'), image_name))
+            return filename
+        p = re.compile(r'(!\[[^\]]*\])\((http.*?)(?=\"|\))(\".*\")?\)')
+        fieldtext = p.sub(_extract_image, fieldtext)
         return field_to_html(fieldtext)
     else:
         return fieldtext
@@ -331,7 +357,7 @@ def cards_from_dir(dirname):
 
 def cards_to_apkg(cards, output_name):
     """Take an iterable of the cards, and put a .apkg in a file called output_name.
-    
+
     NOTE: We _must_ be in a temp directory.
     """
     decks = DeckCollection()
