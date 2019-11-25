@@ -45,7 +45,7 @@ dollar: True
 A configuration can also be passed as a string: `"{dollar: True, card_model_name: CustomModelName, card_model_css: \".card {text-align: left;}\"}"`
 
 Usage:
-    ankdown.py [-r DIR] [-p PACKAGENAME] [--highlight] [--config CONFIG_STRING] [--configFile CONFIG_FILE_PATH]
+    ankdown.py [-r DIR] [-p PACKAGENAME] [--highlight] [--updatedOnly] [--config CONFIG_STRING] [--configFile CONFIG_FILE_PATH]
 
 Options:
     -h --help     Show this help message
@@ -57,14 +57,17 @@ Options:
 
     --highlight   Enable syntax highlighting for code
 
-    --config CONFIG_STRING   ankdown configuration as YAML string
+    --updatedOnly  Only generate cards from updated `.md` files
 
-    --configFile CONFIG_FILE_PATH path to ankdown configuration as YAML file
+    --config CONFIG_STRING  ankdown configuration as YAML string
+
+    --configFile CONFIG_FILE_PATH   path to ankdown configuration as YAML file
 """
 
 
 import hashlib
 import os
+import json
 import re
 import tempfile
 import textwrap
@@ -137,6 +140,8 @@ CONFIG = {
     'recur_dir': '.',
     'dollar': False,
     'highlight': False,
+    'updated_only': False,
+    'version_log': '.mdvlog',
     'card_model_name': 'Ankdown Model 2',
     'card_model_css': """
         .card {
@@ -160,6 +165,7 @@ CONFIG = {
     ]
 }
 
+VERSION_LOG = {}
 
 def simple_hash(text):
     """MD5 of text, mod 2^63. Probably not a great hash function."""
@@ -322,16 +328,29 @@ def produce_cards(filename):
 
 def cards_from_dir(dirname):
     """Walk a directory and produce the cards found there, one by one."""
+    global VERSION_LOG
+    global CONFIG
     for parent_dir, _, files in os.walk(dirname):
         for fn in files:
             if fn.endswith(".md") or fn.endswith(".markdown"):
-                for card in produce_cards(os.path.join(parent_dir, fn)):
-                    yield card
+                filepath = os.path.join(parent_dir, fn)
+                old_hash = VERSION_LOG.get(filepath, None)
+                cur_hash = simple_hash(open(filepath, 'r').read())
+
+                if old_hash != cur_hash or not CONFIG['updated_only']:
+                    try:
+                        for card in produce_cards(filepath):
+                            yield card
+                    except:
+                        raise Exception('fail to produce cards for %s' % filepath)
+                    else:
+                        VERSION_LOG[filepath] = cur_hash
+
 
 
 def cards_to_apkg(cards, output_name):
     """Take an iterable of the cards, and put a .apkg in a file called output_name.
-    
+
     NOTE: We _must_ be in a temp directory.
     """
     decks = DeckCollection()
@@ -343,6 +362,9 @@ def cards_to_apkg(cards, output_name):
             copyfile(abspath, newpath) # This is inefficient but definitely works on all platforms.
             media.add(newpath)
         decks[card.deckname()].add_note(card.to_genanki_note())
+
+    if len(decks) == 0:
+        print('Warning: no card generated')
 
     package = genanki.Package(deck_or_decks=decks.values(), media_files=list(media))
     package.write_to_file(output_name)
@@ -362,6 +384,8 @@ def apply_arguments(arguments):
         CONFIG['recur_dir'] = arguments.get('-r')
     if arguments.get('--highlight'):
         CONFIG['highlight'] = True
+    if arguments.get('--updatedOnly'):
+        CONFIG['updated_only'] = True
 
 
 def apply_highlight_css():
@@ -370,6 +394,10 @@ def apply_highlight_css():
     with open(css_file_path) as css_file:
         CONFIG['card_model_css'] += css_file.read().replace('\n', '')
 
+def load_version_log(version_log):
+    global VERSION_LOG
+    if os.path.exists(version_log):
+        VERSION_LOG = json.load(open(version_log, 'r'))
 
 def main():
     """Run the thing."""
@@ -378,9 +406,12 @@ def main():
     initial_dir = os.getcwd()
     recur_dir = os.path.abspath(os.path.expanduser(CONFIG['recur_dir']))
     pkg_arg = os.path.abspath(os.path.expanduser(CONFIG['pkg_arg']))
+    version_log = os.path.abspath(os.path.expanduser(CONFIG['version_log']))
 
     if CONFIG['highlight']:
         apply_highlight_css()
+
+    load_version_log(version_log)
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         os.chdir(tmpdirname) # genanki is very opinionated about where we are.
@@ -389,6 +420,8 @@ def main():
         cards_to_apkg(card_iterator, pkg_arg)
 
         os.chdir(initial_dir)
+
+    json.dump(VERSION_LOG, open(version_log, 'w'))
 
 
 if __name__ == "__main__":
