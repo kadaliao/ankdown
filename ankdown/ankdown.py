@@ -217,9 +217,9 @@ class Card(object):
         """Ensure proper shape, for extraction into result formats."""
         if len(self.fields) > 3:
             self.fields = self.fields[:3]
-        else:
-            while len(self.fields) < 3:
-                self.fields.append('')
+        # else:
+        #     while len(self.fields) < 3:
+        #         self.fields.append('')
 
     def guid(self):
         return simple_hash(self.card_id())
